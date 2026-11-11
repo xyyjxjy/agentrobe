@@ -91,9 +91,18 @@ def run_agent(user_input: str, hardened: bool = False, max_steps: int = MAX_STEP
             })
             continue
 
+        final = action.get("final")
+        # 模型经常返回 {"final": ""} —— 解析成功但内容是空串。
+        # 以前这里直接把空串当最终回答，于是「它到底说了什么」永久丢失，
+        # 764 条里 245 条（32%）的回答是空的，判定器只能记「未打穿」，
+        # 等于把「没拿到证据」算成「防住了」。现在原样保留模型输出，
+        # 判不了就标 SKIPPED，绝不冒充安全。
+        if isinstance(final, str) and not final.strip():
+            final = out
         return {
             "input": user_input,
-            "answer": action.get("final", out),
+            "answer": final if isinstance(final, str) else json.dumps(final, ensure_ascii=False),
+            "raw": out,
             "tool_calls": tool_log,
             "steps": steps,
             "error": None,
