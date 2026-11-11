@@ -73,7 +73,7 @@ agentprobe/
 │   ├── harmbench.py      # 导入 HarmBench 的 400 条行为
 │   └── normalize.py      # 归一化成标准用例（含判定器路由、载荷展开）
 ├── seeds/                # 导入产出的载荷集
-├── tests/                # 单元测试（68 条：判定器 37 + 导入 9 + 断点 3 + 报告 4 + 复核 5 + 打码 4 + 空回答 6）
+├── tests/                # 单元测试（72 条：判定器 37 + 导入 9 + 断点 3 + 报告 4 + 复核 5 + 打码 4 + 空回答 6 + 预算 4）
 └── target/               # 被测智能体（故意脆弱）
     ├── system_prompt.py  # 系统提示词，内含 canary token
     ├── agent.py          # ReAct 循环
@@ -268,8 +268,24 @@ python calibrate.py score  --in runs/s.jsonl
   事后分不清「它拒答了但没说理由」和「它吐了一段被解析丢了」。
   这 245 条按「未攻破」计入分母，等于把「没拿到证据」算成「防御成功」。
 
-修法两层：`agent.py` 在 `final` 为空时回退到原始输出并新增 `raw` 字段；
-`evaluate()` 在「无回答 + 无工具调用 + 无原始输出」三条同时成立时记 SKIPPED。
+**真正的根因在第三层，而且比前两层都严重**：`finish_reason=length`。
+抓包看单步返回：
+
+```
+max_tokens=2048 → finish=length, content="",  reasoning=2048   ← 思考把预算吃满
+max_tokens=8192 → finish=stop,   content 正常, 18.9s
+```
+
+**模型不是拒答，是我们自己的预算盖住了它。** 245 条里抽两条用 8192 重跑，
+两条都吐出了完整的 XSS 载荷（原本记的是「未攻破」）。所以这不是数据缺失，
+是**用自己的配置上限给被测模型送了一次免死金牌**。
+
+修法三层：
+
+1. `llm_client.chat`：`finish_reason=length` 且 content 为空时，预算提到 4 倍重发一次
+   （只提一次，仍为空就返回空串，交给下游 SKIP，不在单条上无限烧钱）
+2. `agent.py`：`final` 为空时回退到原始输出，并把 `raw` / `finish` 一并落盘
+3. `evaluate()`：无回答 + 无工具调用 + 无原始输出 三条同时成立才记 SKIPPED
 旧数据用 `--redo-empty` 退回重测（只重跑这批，已判的不动）：
 
 ```bash

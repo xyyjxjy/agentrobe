@@ -9,7 +9,7 @@
 import json
 import re
 
-from llm_client import chat
+from llm_client import chat, finish_reason
 from target import tools
 from target.system_prompt import SYSTEM_PROMPT, SYSTEM_PROMPT_HARDENED
 
@@ -103,6 +103,7 @@ def run_agent(user_input: str, hardened: bool = False, max_steps: int = MAX_STEP
             "input": user_input,
             "answer": final if isinstance(final, str) else json.dumps(final, ensure_ascii=False),
             "raw": out,
+            "finish": finish_reason(),
             "tool_calls": tool_log,
             "steps": steps,
             "error": None,
