@@ -7,6 +7,7 @@
 """
 
 import os
+import threading
 import time
 
 import httpx
@@ -15,6 +16,13 @@ from openai import OpenAI
 _client = None
 _call_count = 0
 _total_tokens = 0
+
+# 全局节流：同一进程内所有调用共用一个时间戳。
+# 商汤网关的 token plan 是「低 RPM + 低 TPM」，784 条用例连跑时
+# 前 149 条里有 71 条 429（48% 失败率），等于一半的钱和时间都烧在重试上。
+# LLM_MIN_INTERVAL 设成秒数即可把请求摊开，默认 0（本地 Ollama 不需要）。
+_throttle_lock = threading.Lock()
+_last_call_ts = 0.0
 
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1")
 
@@ -60,7 +68,44 @@ def model_name() -> str:
     return os.getenv("LLM_MODEL", "qwen2.5:7b")
 
 
-def chat(messages: list[dict], temperature: float = 0.0, max_retries: int = 2,
+def _throttle() -> None:
+    """按 LLM_MIN_INTERVAL 把请求摊开。
+
+    这个函数存在的原因很具体：784 条用例连跑时，前 149 条里有 71 条 429，
+    其中 54 条是 `rpm exhausted`。网关的 token plan 只有个位数 RPM，
+    而我们的节奏是「一次请求结束立刻发下一条」，于是必然撞墙。
+
+    设 LLM_MIN_INTERVAL=20 就是 3 RPM，宁可慢，不要一半失败。
+    """
+    gap = float(os.getenv("LLM_MIN_INTERVAL", "0") or 0)
+    if gap <= 0:
+        return
+    global _last_call_ts
+    with _throttle_lock:
+        wait = _last_call_ts + gap - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _last_call_ts = time.time()
+
+
+def _retry_delay(e: Exception, attempt: int) -> float:
+    """429 要按服务端的节奏等，不能拍脑袋 1.5 秒。
+
+    优先用 Retry-After；没有就指数退避。限流场景下 retry-after 常见是几十秒，
+    之前固定睡 1.5s/3s，等于连续三次撞同一堵墙——重试预算全浪费了。
+    """
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        try:
+            ra = resp.headers.get("retry-after")
+            if ra:
+                return max(1.0, float(ra))
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return min(90.0, 5.0 * (2 ** attempt))
+
+
+def chat(messages: list[dict], temperature: float = 0.0, max_retries: int = 5,
          max_tokens: int | None = None) -> str:
     """单轮对话，返回纯文本。异常会重试，避免个别超时打断整批测试。
 
@@ -68,11 +113,15 @@ def chat(messages: list[dict], temperature: float = 0.0, max_retries: int = 2,
     deepseek-r1 这类推理模型会先生成一大段思考再回答，
     不设上限时单次调用可能吐 2000+ token，在 7B 本地模型上就是几十秒。
     我们只关心它最终的动作/回答，思考过程纯属浪费。
+
+    【限流关键】重试次数默认 5 次而不是 2 次：429 不是"调用失败"，
+    是"等一会儿就能成功"，重试 2 次（累计等 4.5 秒）根本熬不过 RPM 窗口。
     """
     global _call_count, _total_tokens
     mt = max_tokens or int(os.getenv("LLM_MAX_TOKENS", "512"))
     last_err = None
     for attempt in range(max_retries + 1):
+        _throttle()
         try:
             resp = get_client().chat.completions.create(
                 model=model_name(),
@@ -87,7 +136,10 @@ def chat(messages: list[dict], temperature: float = 0.0, max_retries: int = 2,
         except Exception as e:  # noqa: BLE001
             last_err = e
             if attempt < max_retries:
-                time.sleep(1.5 * (attempt + 1))
+                delay = _retry_delay(e, attempt)
+                print(f"   ⏳ 调用失败（{type(e).__name__}），{delay:.0f}s 后重试 "
+                      f"{attempt + 1}/{max_retries}", flush=True)
+                time.sleep(delay)
     raise RuntimeError(f"LLM 调用失败（已重试 {max_retries} 次）：{last_err}")
 
 

@@ -116,8 +116,10 @@ def evaluate(transport, case: dict, payload: str, tag: str, beacon=None) -> dict
     verdict.update({"tag": tag, "skipped": bool(verdict.get("skipped")),
                     "error": trace.get("error"),
                     # 模型可能把 answer 输出成 dict（实测加固版会返回
-                    # {'AGP-CANARY-...': [...]}），不 str() 就等着 KeyError 吧
-                    "answer": str(trace.get("answer") or "")[:400],
+                    # {'AGP-CANARY-...': [...]}），不 str() 就等着 KeyError 吧。
+                    # 400 太短了：有一次判定器报"canary 命中"，落盘的 answer
+                    # 却只有前 400 字、里面看不见 canary，等于把证据截没了。
+                    "answer": str(trace.get("answer") or "")[:4000],
                     "tool_calls": [
                         {"name": c.get("name"),
                          "args": c.get("args"),
@@ -265,21 +267,33 @@ def run_campaign(transport, cases: list, rounds: int, variants: int,
                 if k in r:
                     recs[cid][k] = r[k]
         prog = resume.get("_progress") or {}
-        runtime_skip.update(prog.get("runtime_skip") or {})
+        skip_map = dict(prog.get("runtime_skip") or {})
         history.extend(resume.get("rounds") or [])
         total_variants = sum(len(r["variants"]) for r in recs.values())
+        retry = []
         for cid, r in recs.items():
-            if r["seed"] is not None:
+            seed = r["seed"]
+            # 上次因为 429 / 超时被判 SKIPPED 的，续跑时要重试，不能当成"跑过了"。
+            # 断点里保留它们只是为了留证据，不是为了让它们永远消失。
+            if seed is not None and seed.get("skipped"):
+                recs[cid]["seed"] = None
+                skip_map.pop(cid, None)
+                retry.append(cid)
+                continue
+            if seed is not None:
                 done_pairs.add((cid, "seed"))
             for v in r["variants"]:
                 done_pairs.add((cid, v["op"]))
                 used_ops[cid].add(v["op"])
+        runtime_skip.update(skip_map)
         # current_round 非空 = 上一次是跑到一半被打断的，退回这一轮把剩下的补齐；
         # 为空 = 上一轮完整跑完，从下一轮开始。
         cur = prog.get("current_round")
         start_round = int(cur) if cur else len(history) + 1
         print(f"续跑：已恢复 {len(history)} 轮 / {len(done_pairs)} 条判定结果，"
               f"从轮次 {start_round} 开始")
+        if retry:
+            print(f"      另有 {len(retry)} 条上次是请求失败/超时，本次重试")
 
     evaluated_since_ckpt = 0
     ckpt_meta = {"seed": seed, "variants_per_round": variants,

@@ -50,11 +50,30 @@ def _fname(p: str) -> str:
     return os.path.basename(p)
 
 
-def describe(d: dict) -> dict:
+def _rescored(path: str) -> dict | None:
+    """读同名旁路的复核结果（rescore.py --write 产出）。
+
+    复核是**旁路**：原始 JSON 不动，只多一份 <run>.rescored.json。
+    报告里两个数字并列，读者自己判断信哪个——这比悄悄改原始数字诚实。
+    """
+    side = path + ".rescored.json"
+    if not os.path.exists(side):
+        return None
+    try:
+        with open(side, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def describe(d: dict, path: str = "") -> dict:
     s = d["summary"]
     m = d.get("meta") or {}
     j = s.get("judgeable") or 0
+    rs = _rescored(path) if path else None
     return {
+        "rescored_asr": rs.get("adjusted_asr") if rs else None,
+        "rescored_down": rs.get("downgraded") if rs else 0,
         "model": m.get("model") or "?",
         "ts": m.get("ts") or "?",
         "judgeable": j,
@@ -79,9 +98,18 @@ def describe(d: dict) -> dict:
 
 
 def section_overview(rows: list) -> list[str]:
+    has_rescore = any(e.get("rescored_asr") is not None for _, e in rows)
+    head = "| 运行 | 模型 | 时间 | 判定数 | ASR |"
+    sep = "|---|---|---|---:|---:|"
+    if has_rescore:
+        head += " 复核 ASR |"
+        sep += "---:|"
+    head += " 变体 | 轮次 | 请求失败 | 备注 |"
+    sep += "---:|---:|---:|---|"
     out = ["## 1. 全部运行一览", "",
-           "| 运行 | 模型 | 时间 | 判定数 | ASR | 变体 | 轮次 | 请求失败 | 备注 |",
-           "|---|---|---|---:|---:|---:|---:|---:|---|"]
+           ("「ASR」是判定器原始结论，「复核 ASR」是 `rescore.py` 剔掉"
+            "「拒答时引用载荷」后的数值。两个都列，不覆盖原始数据。" if has_rescore else ""),
+           "", head, sep]
     for name, e in rows:
         notes = []
         if e["mock"]:
@@ -94,10 +122,14 @@ def section_overview(rows: list) -> list[str]:
             notes.append("未产生变体")
         if e["legacy"]:
             notes.append("**旧格式**")
-        out.append(
-            f"| `{name}` | {e['model']} | {e['ts']} | {e['judgeable']} | "
-            f"{e['asr']}% | {e['variants']} | {e['rounds']} | "
-            f"{e['skip_runtime']} | {'、'.join(notes) or '—'} |")
+        line = (f"| `{name}` | {e['model']} | {e['ts']} | {e['judgeable']} | "
+                f"{e['asr']}% |")
+        if has_rescore:
+            r = e.get("rescored_asr")
+            line += f" {r}% |" if r is not None else " — |"
+        line += (f" {e['variants']} | {e['rounds']} | "
+                 f"{e['skip_runtime']} | {'、'.join(notes) or '—'} |")
+        out.append(line)
     out.append("")
     return out
 
@@ -193,7 +225,7 @@ def build(paths: list, min_judgeable: int = 0) -> str:
         d = load(p)
         if not d:
             continue
-        e = describe(d)
+        e = describe(d, p)
         if e["judgeable"] < min_judgeable:
             continue
         runs.append((_fname(p), e, d))
