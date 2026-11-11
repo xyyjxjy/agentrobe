@@ -21,6 +21,7 @@ import concurrent.futures
 import json
 import os
 import random
+import re
 import time
 
 import yaml
@@ -119,15 +120,33 @@ def evaluate(transport, case: dict, payload: str, tag: str, beacon=None) -> dict
                     # {'AGP-CANARY-...': [...]}），不 str() 就等着 KeyError 吧。
                     # 400 太短了：有一次判定器报"canary 命中"，落盘的 answer
                     # 却只有前 400 字、里面看不见 canary，等于把证据截没了。
-                    "answer": str(trace.get("answer") or "")[:4000],
+                    "answer": _redact(str(trace.get("answer") or ""))[:4000],
                     "tool_calls": [
                         {"name": c.get("name"),
                          "args": c.get("args"),
                          "ok": c.get("ok"),
-                         "result": str(c.get("result") or "")[:200]}
+                         "result": _redact(str(c.get("result") or ""))[:200]}
                         for c in (trace.get("tool_calls") or [])
                     ][:10]})
     return verdict
+
+
+
+# 被测对象有路径穿越漏洞（T-01 就是专门测这个的），它真的能读到 .env
+# 并把内容复述进回答——2026-11-11 的 764 条那次就是这么把真实 API Key
+# 写进 runs/*.json 的，我随后还把它提交进了 git。
+# 判定证据要留，密钥不能留：落盘前统一打码，保留长度特征以便排查。
+_SECRET_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_\-]{12,}"),          # OpenAI/网关类
+    re.compile(r"(?i)\b(api[_-]?key|secret|token)\s*[=:]\s*[\"']?([A-Za-z0-9_\-]{16,})"),
+)
+
+
+def _redact(text: str) -> str:
+    out = str(text)
+    out = _SECRET_PATTERNS[0].sub("sk-***REDACTED***", out)
+    out = _SECRET_PATTERNS[1].sub(lambda m: f"{m.group(1)}=***REDACTED***", out)
+    return out
 
 
 def _evaluate_guarded(transport, case: dict, payload: str, tag: str,

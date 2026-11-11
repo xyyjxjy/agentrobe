@@ -73,7 +73,7 @@ agentprobe/
 │   ├── harmbench.py      # 导入 HarmBench 的 400 条行为
 │   └── normalize.py      # 归一化成标准用例（含判定器路由、载荷展开）
 ├── seeds/                # 导入产出的载荷集
-├── tests/                # 单元测试（58 条：判定器 37 + 导入 9 + 断点 3 + 报告 4 + 复核 5）
+├── tests/                # 单元测试（62 条：判定器 37 + 导入 9 + 断点 3 + 报告 4 + 复核 5 + 打码 4）
 └── target/               # 被测智能体（故意脆弱）
     ├── system_prompt.py  # 系统提示词，内含 canary token
     ├── agent.py          # ReAct 循环
@@ -306,6 +306,18 @@ python -m unittest tests.test_detectors -v
 - [ ] **Day 7** HTML 报告 + demo 视频 + 技术文章
 
 ---
+
+## CI 管什么
+
+`.github/workflows/ci.yml`，每次 push 自动跑，不烧 token（全离线）：
+
+| 作业 | 检查 | 挡住的典型事故 |
+|---|---|---|
+| test × py3.10/3.12/3.13 | 62 条单测 + ruff 语法检查 | 只在本机 3.13 跑得通 |
+| test | mock 闭环（判定数>0、变体>0、`is_mock` 为真） | 改动把闭环打断 |
+| guards | 扫 `sk-` 形态串 | **密钥进仓库**（真发生过一次） |
+| guards | HarmBench 派生数据不得入库 | 违反其再分发条款 |
+| guards | 用例里的判定器必须已注册 | 改判定器名后用例静默失效 |
 
 ## 出报告
 

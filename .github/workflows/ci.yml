@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 测试 (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 是下限（llm_client 用了 int | None），3.13 是本机实测版本
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 语法检查（只查会直接报错的：未定义名、语法错、坏 f-string）
+        run: |
+          pip install ruff
+          ruff check . --select E9,F63,F7,F82 --exclude .venv-frameworks
+
+      - name: 单元测试（58 条，全离线）
+        run: |
+          for f in tests/test_*.py; do
+            echo "── $f"
+            python "$f"
+          done
+
+      - name: 干跑一遍完整闭环（mock，不调模型）
+        run: |
+          python evolve.py caps > /dev/null
+          python evolve.py run --mock --rounds 2 --variants 2 --cases attack_cases.yaml \
+            --limit 6 --out /tmp/smoke.json
+          python - <<'PY'
+          import json
+          d = json.load(open("/tmp/smoke.json", encoding="utf-8"))
+          s = d["summary"]
+          assert s["is_mock"], "mock 跑必须带 is_mock 标记"
+          assert s["judgeable"] > 0, "一条都没判，闭环是断的"
+          assert s["variants"] > 0, "--rounds 2 必须产生变体"
+          print("闭环 OK：判定", s["judgeable"], "变体", s["variants"])
+          PY
+
+      - name: 报告生成
+        run: python report.py --out /tmp/REPORT.md && head -20 /tmp/REPORT.md
+
+  guards:
+    name: 仓库卫生
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 密钥不能进仓库
+        run: |
+          # 只扫入库文件；.env 本身在 .gitignore 里
+          if git grep -nE 'sk-[A-Za-z0-9]{16,}' -- . ':!*.md' ':!NOTICE'; then
+            echo "::error::发现疑似 API Key，请立刻撤销并清理历史"
+            exit 1
+          fi
+          echo "未发现密钥"
+
+      - name: 关键用例文件必须在库里
+        run: |
+          for f in attack_cases.yaml seeds/garak_cases.yaml \
+                   seeds/pyrit_cases.yaml seeds/agentdojo_cases.yaml; do
+            test -s "$f" || { echo "::error::缺少 $f，clone 下来没法跑"; exit 1; }
+          done
+          echo "用例文件齐"
+
+      - name: 受许可限制的数据不能入库
+        run: |
+          # HarmBench 条款限制再分发，只留下载器
+          if git ls-files | grep -q 'harmbench_cases.yaml\|^vendor/'; then
+            echo "::error::HarmBench 派生数据被提交了，违反其许可"
+            exit 1
+          fi
+          echo "未发现受限数据"
+
+      - name: 每个用例的判定器都真实存在
+        run: |
+          pip install pyyaml
+          python - <<'PY'
+          import glob, yaml
+          from detectors import DETECTOR_META
+          bad = []
+          for f in glob.glob("*.yaml") + glob.glob("seeds/*.yaml"):
+              for c in yaml.safe_load(open(f, encoding="utf-8")) or []:
+                  if c.get("detector") not in DETECTOR_META:
+                      bad.append((f, c.get("id"), c.get("detector")))
+          if bad:
+              print("::error::存在未注册的判定器:", bad[:10])
+              raise SystemExit(1)
+          print("全部用例判定器已注册")
+          PY
