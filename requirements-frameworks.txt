@@ -1,0 +1,61 @@
+# 框架环境依赖（装在 .venv-frameworks，不进主环境）
+#
+# 为什么不写成一个干净的 requirements.txt：
+#   三个框架的依赖互相打架（garak 要 openai<3、anthropic<1；PyRIT 默认拉 openai 3.x、
+#   anthropic 2.x），`pip install -r` 的正常求解会卡十几分钟然后给出一个谁也跑不起来的组合。
+#   实测可行的是：先 --no-deps 装框架本体，再按缺失模块一个个补。
+#   下面就是这个过程的固化结果，按顺序执行即可。
+
+# ---- 0) 建环境（Python 3.13 实测可用）----
+#   py -3.13 -m venv .venv-frameworks
+#   .venv-frameworks/Scripts/python.exe -m pip install -U pip
+
+# ---- 1) 框架本体（--no-deps，避免求解器打架）----
+garak==0.17.1
+pyrit==1.1.0
+agentdojo==0.1.35
+
+# ---- 2) garak 运行必需（缺一个就有一批 probe 导不进来）----
+pyyaml>=6.0
+pydantic>=2.0
+nltk
+base2048
+jsonschema
+langdetect
+tiktoken               # probes.divergence（3 个）
+huggingface_hub        # probes.fileformats
+zalgolib               # probes.encoding.InjectZalgo
+backoff                # probes.suffix.GCG
+wn==0.9.5              # probes.topic（还需 oewn:2023 词库，见下）
+
+# ---- 3) PyRIT converter 必需 ----
+#   缺 appdirs 时 25 个 converter 直接 import 失败（报的却是 ModuleNotFound）
+appdirs
+tenacity
+tinytag                # converter 基类链上会 import
+sqlalchemy             # pyrit.memory
+aiofiles
+openai<3               # 必须锁 <3，否则 garak 的约束被顶掉
+confusable_homoglyphs  # unicode_confusable
+art                    # ascii_art
+ecoji                  # ecoji
+
+# ---- 4) AgentDojo 数据读取必需 ----
+#   只要它的数据（AST 读 injection_tasks.py），不跑它的 pipeline；
+#   下面这些是 package import 时的最小集。cohere / google-* / transformers 不用装。
+docstring_parser
+rich
+deepdiff
+email-validator
+python-dotenv
+anthropic<1            # agentdojo 的 pipeline 会 import，且必须 <1 才不违反 garak 约束
+
+# ---- 5) 明确不装的（装了也导不进/用不上）----
+#   torch                 2GB+，只影响 suffix.GCG/BEAST 两个 probe
+#   soundfile, librosa    音频模态，被测对象是文本 agent
+#   transformers          只影响 sata.MLM / grandma intentservice
+#
+# wordnet（probes.topic 的 3 个 probe）：
+#   garak 要 oewn:2023，wn 会去 en-word.net 下载；本机实测下载 0 字节失败。
+#   手动补的话：下载 LMF 格式的 english-wordnet-2023.zip 后 wn.add(路径)，
+#   并保证 wn.config.data_directory 指向 garak 的 data 目录。

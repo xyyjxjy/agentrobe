@@ -1,0 +1,37 @@
+# 框架隔离环境（garak / PyRIT 跑在这里，不进主环境）
+.venv-frameworks/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 环境变量（含 API Key）
+.env
+
+# 工作区内部笔记（对话记忆，不是项目产物）
+.workbuddy/
+
+# 运行产物：只保留真实跑测的明细，其余（日志/断点/mock/临时标注）一律不入库
+runs/*
+!runs/real_*.json
+runs/real_frameworks_smoke.json
+target/outbox.jsonl
+
+# 外部框架导出的原始语料（体积大，可重新生成）
+seeds/garak.jsonl
+seeds/garak_all.jsonl
+seeds/_*.jsonl
+seeds/*_x5.yaml
+seeds/*_echo.yaml
+seeds/pyrit.jsonl
+seeds/agentdojo.jsonl
+
+# 第三方数据集本体与受许可限制的派生语料
+# HarmBench 条款限制再分发，只保留下载器（importers/harmbench.py --download）
+vendor/
+seeds/harmbench.jsonl
+seeds/harmbench_cases.yaml
+
+# 说明：seeds/garak_cases.yaml（1712 条）、seeds/pyrit_cases.yaml（98 条）、
+# seeds/agentdojo_cases.yaml（27 条）是入库的，别人 clone 下来不用重跑导入器就能测。
