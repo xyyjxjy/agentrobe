@@ -62,6 +62,7 @@ agentprobe/
 ├── evolve.py             # 进化式编排：跑 → 判 → 变异 → 再跑 → 收敛
 ├── attack_cases.yaml     # 手写用例库（12 条，5 类）
 ├── run_once.py           # 单条调试入口
+├── report.py             # 把 runs/*.json 渲染成 REPORT.md（含数据卫生检查）
 ├── importers/            # 四个外部框架的接入层（都必须在 .venv-frameworks 里跑）
 │   ├── garak_export.py   # 枚举 garak probe，导出载荷 + 官方 trigger
 │   ├── pyrit_mutate.py   # 用 PyRIT 的 converter 给已有用例做深度变异
@@ -69,7 +70,7 @@ agentprobe/
 │   ├── harmbench.py      # 导入 HarmBench 的 400 条行为
 │   └── normalize.py      # 归一化成标准用例（含判定器路由、载荷展开）
 ├── seeds/                # 导入产出的载荷集
-├── tests/                # 单元测试（49 条：判定器 37 + 导入产物 9 + 断点续跑 3）
+├── tests/                # 单元测试（53 条：判定器 37 + 导入产物 9 + 断点续跑 3 + 报告渲染 4）
 └── target/               # 被测智能体（故意脆弱）
     ├── system_prompt.py  # 系统提示词，内含 canary token
     ├── agent.py          # ReAct 循环
@@ -302,6 +303,33 @@ python -m unittest tests.test_detectors -v
 - [ ] **Day 7** HTML 报告 + demo 视频 + 技术文章
 
 ---
+
+## 出报告
+
+跑完不是结束，把数字整理成别人能核对的形式才算：
+
+```bash
+python report.py                            # 扫 runs/real_*.json → REPORT.md
+python report.py --runs "runs/*.json" --out docs/report.md
+python report.py --min-judgeable 100        # 只收样本量够的
+```
+
+报告里有四样东西，都是终端输出给不了的：
+
+| 章节 | 作用 |
+|---|---|
+| 全部运行一览 | 一行一次运行，含模型、判定数、变体数、请求失败数 |
+| **数据卫生检查** | 自动标出 `is_mock`、样本 < 30、`--rounds 1`（无变体）、旧格式记录 |
+| 按模型分组 | **只并列不排名**。换模型 = 换被测对象，跨模型的数字比大小是错的 |
+| 逐次明细 | 分层 ASR（strong/medium/weak）+ 每条攻破的证据原文 |
+
+三条渲染规则写死在 `report.py` 里，不是靠自觉：
+
+1. `is_mock=True` 的运行落到独立区块，且该区块标题就写着「不构成任何安全结论」；
+2. `summary` 里没有 `skipped_runtime` 的旧记录会被标成「不能作为证据引用」——
+   那版代码把请求失败记成「未攻破」并计入了分母；
+3. 判定数 < 30 时，百分比后面必须跟一句「只能当参考，不能当结论」。
+   12 条用例算出 8.3% 和 0% 的差别，实测复跑 3 次就不复现，把它当结论就是骗人。
 
 ## 接自己的智能体
 
