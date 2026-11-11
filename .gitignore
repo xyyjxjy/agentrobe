@@ -15,6 +15,9 @@ __pycache__/
 # 运行产物：只保留真实跑测的明细，其余（日志/断点/mock/临时标注）一律不入库
 runs/*
 !runs/real_*.json
+# 白名单会把 *.partial.json 一起放进来（它也 real_ 开头），必须再挡一次
+runs/*.partial.json
+!runs/*.rescored.json
 runs/real_frameworks_smoke.json
 target/outbox.jsonl
 
