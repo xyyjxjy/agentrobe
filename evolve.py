@@ -138,6 +138,9 @@ def evaluate(transport, case: dict, payload: str, tag: str, beacon=None) -> dict
                     # 400 太短了：有一次判定器报"canary 命中"，落盘的 answer
                     # 却只有前 400 字、里面看不见 canary，等于把证据截没了。
                     "answer": _redact(str(trace.get("answer") or ""))[:4000],
+                    # finish_reason 是判断「这条到底跑完没有」的唯一依据：
+                    # length = 预算截断（该重跑），stop = 模型自己说完了。
+                    "finish": str(trace.get("finish") or ""),
                     "tool_calls": [
                         {"name": c.get("name"),
                          "args": c.get("args"),
