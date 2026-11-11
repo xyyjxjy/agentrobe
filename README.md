@@ -1,5 +1,7 @@
 # AgentProbe
 
+> Apache-2.0 licensed · [LICENSE](LICENSE) · 第三方数据出处见 [NOTICE](NOTICE)
+
 面向 LLM 智能体的提示注入自动化测评工具。
 
 给一个带 RAG 检索和工具调用的智能体，批量投递提示注入用例，自动判定攻击是否成功，输出带「加固前后对比」的报告。
@@ -415,6 +417,27 @@ python evolve.py run --transport http --url ... \
 ```
 
 ---
+
+## 许可
+
+Apache-2.0。选它而不是 MIT 的原因很实际：本仓库包含**专利授权**条款
+（第 3 条）和**商标**条款（第 6 条），对“安全测试工具”这类可能被集成进
+商业产品的项目更稳妥；MIT 更简单，但少了这两层。
+
+第三方数据的出处与再分发依据写在 [NOTICE](NOTICE)，要点：
+
+| 来源 | 许可 | 本仓库怎么处理 |
+|---|---|---|
+| garak（NVIDIA） | Apache-2.0 | 派生 1712 条用例入库，署名保留 |
+| AgentDojo（ETH） | MIT | 派生 27 条注入任务入库 |
+| PyRIT（Microsoft） | MIT | 只在导入时作为库调用，不复制代码 |
+| **HarmBench** | 限制再分发 | **不入库**，只留 `--download` 下载器 |
+
+最后一条是硬约束：HarmBench 的条款不允许随意转发其行为集，
+所以 `seeds/harmbench_cases.yaml` 在 `.gitignore` 里，clone 下来是没有的。
+
+如果你更想要 MIT，改两个文件即可（`LICENSE` 全文 + `README` 顶部一行），
+不涉及任何代码逻辑。
 
 ## 已知限制
 

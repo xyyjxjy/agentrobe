@@ -1,0 +1,27 @@
+agentprobe
+Copyright 2026 The agentprobe Authors
+
+本产品包含由第三方项目衍生的数据。原始项目、许可与再分发方式如下：
+
+1. garak（NVIDIA，Apache-2.0）
+   来源：https://github.com/NVIDIA/garak
+   衍生内容：seeds/garak_cases.yaml（由 importers/garak_export.py 从 probe
+   载荷与官方 trigger 归一化而来，共 1712 条）。
+   Apache-2.0 允许再分发，保留本条署名。
+
+2. AgentDojo（MIT）
+   来源：https://github.com/ethz-spylab/agentdojo
+   衍生内容：seeds/agentdojo_cases.yaml（27 条注入任务的目标、期望工具调用
+   与注入模板）。
+
+3. PyRIT（Microsoft，MIT）
+   来源：https://github.com/Azure/PyRIT
+   使用方式：仅在 importers/pyrit_mutate.py 中以库的形式调用其 converter，
+   运行时依赖，不复制其代码；派生产物 seeds/pyrit_cases.yaml 为变异结果。
+
+4. HarmBench
+   来源：https://github.com/centerforaisafety/HarmBench
+   **不随本仓库分发。** 其许可条款限制再分发与特定用途，仓库只提供
+   importers/harmbench.py --download 下载器，使用者需自行获取并遵守其条款。
+
+5. 目标语料（target/corpus/*.md）为虚构内容，仅用于演示，不含真实数据。
