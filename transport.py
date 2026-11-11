@@ -253,7 +253,16 @@ def make_transport(kind: str, **kw) -> Transport:
         url = kw.get("url")
         if not url:
             raise SystemExit("--transport http 需要同时给 --url")
-        return HTTPTarget(url, timeout=float(os.getenv("TARGET_TIMEOUT", "180")))
+        # headers / payload_field 必须透传：真实目标几乎都挂在网关后面要鉴权，
+        # 而且字段名各家用各家的（message / input / query / prompt）。
+        # 不透传的话，只有"无鉴权 + 正好叫 message"的目标能测——
+        # 那个能力等于没有。
+        return HTTPTarget(
+            url,
+            timeout=float(kw.get("timeout") or os.getenv("TARGET_TIMEOUT", "180")),
+            headers=kw.get("headers") or None,
+            payload_field=kw.get("payload_field") or "message",
+        )
     raise SystemExit(f"未知 transport：{kind}")
 
 

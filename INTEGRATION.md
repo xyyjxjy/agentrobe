@@ -2,55 +2,72 @@
 
 给 harness 的作者看。目标：**传一个被测 agent 的地址，拿一包结构化结果。**
 
-## 1. 调它
+## 1. 扫描器要放在哪 —— 先确定网络拓扑
+
+`--target` 必须是**扫描器所在机器能访问到的地址**。所以先问：目标跑在哪？
+
+| 拓扑 | `--target` 写什么 | 说明 |
+|---|---|---|
+| 同一进程（都是 Python） | `inproc` | 不走网络，直接函数调用，最快 |
+| 同一台机器 / 同一 Pod | `http://127.0.0.1:8000/chat` | 只在**scan 与 target 同机**时成立 |
+| 同一内网不同容器 | `http://target-svc:8000/chat` | 用服务名或内网 IP |
+| 公网 / 跨网 | `https://target.example.com/chat` | 一般要带鉴权头 |
+
+`127.0.0.1` 不是默认答案，它只覆盖第二种情况。team 里最常见的形态是第三种：
+扫描器跑在 CI 容器，被测 agent 跑在另一个容器，用 compose 的服务名互访。
+
+## 2. 调它
 
 ```bash
-# 命令行
-python aisec.py --target http://127.0.0.1:8000/chat --budget 100 --out findings.json
+# 同进程靶子（不需要起服务，适合先跑通链路）
+python aisec.py --target inproc --budget 50
 
-# 代码里
-from aisec import scan
-res = scan(target="http://127.0.0.1:8000/chat", budget=100)
+# 内网目标 + 鉴权 + 字段名不是 message
+python aisec.py --target http://target-svc:8000/chat \
+    --header "Authorization: Bearer $TOKEN" \
+    --payload-field input \
+    --budget 100 --out findings.json
 ```
 
-`budget` 是抽样条数。全量 823 条 strong 在单卡小模型上要十几小时，
-**100 条约 1 小时**，统计上够给一个带 ±8% 置信区间的数字。
+```python
+from aisec import scan
+res = scan(target="http://target-svc:8000/chat",
+           headers={"Authorization": "Bearer xxx"},
+           payload_field="input",
+           budget=100)
+```
 
-## 2. 被测目标要实现什么
+`--header` 可重复，`--payload-field` 默认 `message`。目标如果还挂在网关后面，
+`TARGET_TIMEOUT` 环境变量控制单次 HTTP 超时（默认 180 秒）。
 
-### HTTP 目标（推荐）
+## 3. 被测目标要实现什么
 
 ```
 POST <target>
 Content-Type: application/json
-{"message": "<攻击载荷>"}
+{"<payload_field>": "<攻击载荷>"}
 ```
 
 ```json
 {"answer": "...", "tool_calls": [...], "steps": [...]}
 ```
 
-字段是宽容匹配的：`answer` 也可写成 `output` / `text` / `response`。
+`answer` 也接受 `output` / `text` / `response`。`payload_field` 由你自己定，
+扫描器侧用 `--payload-field` 对齐即可。
 
-**只返回 `answer` 也能跑**，但 `tool_abuse` / `tool_goal` 两类会标 SKIPPED——
+**只返回 `answer` 也能跑**，但 `tool_abuse` / `tool_goal` 会标 SKIPPED——
 这两类判据是「工具到底被调了没有」，拿不到工具调用就没有依据。这不是失败，
-是这个攻击面对你的 agent 不存在（详见第 4 节）。
+是能力协商（见第 5 节）。
 
 `tool_calls` 建议格式：
 ```json
 [{"name": "read_file", "args": {"path": "../.env"}, "ok": true, "result": "..."}]
 ```
 
-### 进程内目标
+这条链路有集成测试兜底：`tests/test_http_target.py` 会起一个带鉴权的
+本地 HTTP 目标，验证字段名、请求头、工具调用解析、401 处理全部到位。
 
-内置靶子（`target/agent.py`，3 个工具，标准 ReAct 循环）：
-```bash
-python aisec.py --target inproc --budget 50
-```
-
-要接自己的 agent 也可以写一个 `Transport` 子类，实现 `send(payload) -> trace`。
-
-## 3. 输出
+## 4. 输出
 
 ```json
 {
@@ -75,7 +92,7 @@ python aisec.py --target inproc --budget 50
 **`severity=high` 的 finding 可以直接下结论；`low` 的只能当线索**——
 它在源码里对应 `weak` 判定器（词表启发式），不要和 high 混在一起算比例。
 
-## 4. SKIPPED 是什么，为什么不是失败
+## 5. SKIPPED 是什么，为什么不是失败
 
 四种情况会退出分母，`summary.skipped` 是总数：
 
@@ -90,7 +107,7 @@ python aisec.py --target inproc --budget 50
 最后两类最容易被误读。它们的意思是「**这条没测**」，不是「**这条防住了**」。
 把 SKIPPED 当成分母算成功率，数字会好看得离谱。
 
-## 5. 运行依赖
+## 6. 运行依赖
 
 主项目只需要 `openai` `httpx` `pyyaml` `python-dotenv`。
 `.venv-frameworks` 里那三个框架（garak / PyRIT / AgentDojo）**只在重新生成
@@ -99,7 +116,7 @@ python aisec.py --target inproc --budget 50
 LLM 配置在 `.env`：`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`。
 这是**被测 agent 自己用的模型**，不是我们的。
 
-## 6. 它不适合做什么
+## 7. 它不适合做什么
 
 说清楚边界，比吹功能有用：
 

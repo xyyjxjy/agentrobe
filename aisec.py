@@ -6,12 +6,14 @@
     输入输出都是固定 schema，别人拿去嵌进 harness 不用读我们的源码。
 
 用法（命令）：
-    python aisec.py --target http://127.0.0.1:8000/chat --budget 100 --out findings.json
-    python aisec.py --target inproc --budget 50          # 拿内置靶子试跑
+    python aisec.py --target http://target-svc:8000/chat --budget 100 --out findings.json
+    python aisec.py --target http://target-svc:8000/chat \\
+        --header "Authorization: Bearer xxx" --payload-field input
+    python aisec.py --target inproc --budget 50          # 内置靶子，不走网络
 
 用法（代码）：
     from aisec import scan
-    result = scan(target="http://127.0.0.1:8000/chat", budget=100)
+    result = scan(target="http://target-svc:8000/chat", budget=100)
     for f in result["findings"]:
         print(f["severity"], f["title"], f["repro"])
 
@@ -69,7 +71,8 @@ def _pick(cases: list, budget: int, seed: int) -> list:
 
 def scan(target: str = "inproc", budget: int = 100, cases_path: str = DEFAULT_CASES,
          strength: str = "strong", seed: int = 42, case_timeout: float = 240.0,
-         hard: bool = False, verbose: bool = True) -> dict:
+         hard: bool = False, headers: dict | None = None,
+         payload_field: str = "message", verbose: bool = True) -> dict:
     """跑一轮扫描，返回 findings。不抛异常，失败也会返回结构化的 summary。"""
     load_dotenv(os.path.join(ROOT, ".env"))
     started = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -84,7 +87,9 @@ def scan(target: str = "inproc", budget: int = 100, cases_path: str = DEFAULT_CA
     cases = _pick(cases, budget, seed)
 
     kind = "in_process" if target in ("inproc", "in-process", "local") else "http"
-    transport = make_transport(kind, hardened=hard, url=None if kind == "in_process" else target)
+    transport = make_transport(kind, hardened=hard,
+                               url=None if kind == "in_process" else target,
+                               headers=headers, payload_field=payload_field)
 
     if verbose:
         print(f"目标 {transport.name} | 用例池 {total_pool} → 抽 {len(cases)} 条 "
@@ -128,6 +133,7 @@ def scan(target: str = "inproc", budget: int = 100, cases_path: str = DEFAULT_CA
             "budget": len(cases),
             "sampled_from": total_pool,
             "strength": strength,
+            "payload_field": payload_field if kind == "http" else "-",
             "hardened_target": bool(hard),
             "is_mock": bool(s.get("is_mock")),
         },
@@ -170,7 +176,12 @@ def _repro(target: str, payload: str) -> str:
 def main():
     ap = argparse.ArgumentParser(description="AI 安全扫描：给目标，出 findings")
     ap.add_argument("--target", default="inproc",
-                    help="被测 agent 的 HTTP 地址；inproc = 内置靶子")
+                    help="被测 agent 的地址，如 http://target-svc:8000/chat；"
+                         "inproc = 内置靶子（同进程调用，不走网络）")
+    ap.add_argument("--header", action="append", default=[],
+                    metavar="K:V", help="附加请求头，可重复；目标要鉴权时用")
+    ap.add_argument("--payload-field", default="message",
+                    help="载荷放在哪个字段里（message/input/query/prompt，看目标实现）")
     ap.add_argument("--budget", type=int, default=100, help="抽样条数，0 = 全量")
     ap.add_argument("--cases", default=DEFAULT_CASES)
     ap.add_argument("--strength", default="strong", help="strong,medium,weak 可逗号组合，空=全部")
@@ -180,9 +191,17 @@ def main():
     ap.add_argument("--out", default="findings.json")
     args = ap.parse_args()
 
+    headers = {}
+    for h in args.header:
+        if ":" not in h:
+            raise SystemExit(f"--header 要写成 K:V，收到的是 {h!r}")
+        k, v = h.split(":", 1)
+        headers[k.strip()] = v.strip()
+
     res = scan(target=args.target, budget=args.budget, cases_path=args.cases,
                strength=args.strength, seed=args.seed,
-               case_timeout=args.case_timeout, hard=args.hard)
+               case_timeout=args.case_timeout, hard=args.hard,
+               headers=headers or None, payload_field=args.payload_field)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(res, f, ensure_ascii=False, indent=1)
     print(f"\n结果已写入 {args.out}（{len(res['findings'])} 条 finding）")
