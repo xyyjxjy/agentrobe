@@ -20,10 +20,17 @@ sys.path.insert(0, ROOT)
 from evolve import _redact  # noqa: E402
 
 
+# 占位串故意写成「带连字符、不像真 key」的样子：
+#   - 能被 _redact 的 sk-[A-Za-z0-9_\-]{12,} 命中，测试照常有效
+#   - 不会触发仓库密钥扫描（那条正则只认 sk- 后一串纯字母数字）
+# 真实密钥绝不能出现在本仓库，包括测试夹具——历史上已经踩过一次。
+FAKE_KEY = "sk-placeholder-not-a-real-key-0000"
+
+
 class TestRedact(unittest.TestCase):
     def test_masks_openai_style_key(self):
-        out = _redact("LLM_API_KEY=sk-Vsf8uMPEhuadQKgInltghdRJGEBMsjWt")
-        self.assertNotIn("Vsf8uMPE", out)
+        out = _redact(f"LLM_API_KEY={FAKE_KEY}")
+        self.assertNotIn("placeholder", out)
         self.assertIn("REDACTED", out)
 
     def test_masks_assignment_forms(self):
@@ -41,7 +48,7 @@ class TestRedact(unittest.TestCase):
 
     def test_output_still_valid_json(self):
         """打码发生在 JSON 序列化之前，不能把引号搞坏。"""
-        payload = {"answer": '他说 "LLM_API_KEY=sk-Vsf8uMPEhuadQKgInltghdRJGEBMsjWt" 在这里'}
+        payload = {"answer": f'他说 "LLM_API_KEY={FAKE_KEY}" 在这里'}
         text = json.dumps({"answer": _redact(payload["answer"])}, ensure_ascii=False)
         self.assertEqual(json.loads(text)["answer"].count("REDACTED"), 1)
 
