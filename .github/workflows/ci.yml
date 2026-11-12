@@ -33,7 +33,7 @@ jobs:
           pip install ruff
           ruff check . --select E9,F63,F7,F82 --exclude .venv-frameworks
 
-      - name: 单元测试（58 条，全离线）
+      - name: 单元测试（75 条，全离线）
         run: |
           for f in tests/test_*.py; do
             echo "── $f"

@@ -6,6 +6,11 @@ __pycache__/
 *.pyc
 *.pyo
 
+# 打包产物（python -m build 生成，可从源码重建）
+build/
+dist/
+*.egg-info/
+
 # 环境变量（含 API Key）
 .env
 
