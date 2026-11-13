@@ -46,4 +46,4 @@ git grep -nE 'sk-[A-Za-z0-9]{16,}' -- . ':!*.md' ':!NOTICE'
 
 ## 支持的版本
 
-只维护 `master`。没有 LTS 分支。
+只维护 `main`。没有 LTS 分支。

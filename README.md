@@ -116,6 +116,19 @@ agentprobe/
 | [docs/ci.md](docs/ci.md) | CI 检查了什么 |
 | [frr_report.md](frr_report.md) | FRR 测量完整报告 |
 | [INTEGRATION.md](INTEGRATION.md) | 作为库接入（固定 schema） |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 怎么加判定器、怎么加用例 |
+| [SECURITY.md](SECURITY.md) | 安全策略与漏洞报告渠道 |
+
+## 联系与贡献
+
+| 想做什么 | 去哪 |
+|---|---|
+| 提问题、报 bug、给建议 | [GitHub Issues](https://github.com/xyyjxjy/xy/issues) |
+| 提交代码 / 加判定器 | 先读 [CONTRIBUTING.md](CONTRIBUTING.md) |
+| **报告安全漏洞** | **不要开 public issue** → 仓库页 `Security` → `Report a vulnerability`（私密，只有维护者可见） |
+| 许可与数据再分发 | 见 [NOTICE](NOTICE) |
+
+不需要邮箱：Issue 和私密漏洞报告都能直接找到我。漏洞报告请附**可复现命令**；涉及密钥时只说位置，不要贴内容。
 
 ## 使用边界
 
