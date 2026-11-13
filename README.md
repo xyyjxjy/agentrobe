@@ -123,7 +123,7 @@ agentprobe/
 
 | 想做什么 | 去哪 |
 |---|---|
-| 提问题、报 bug、给建议 | [GitHub Issues](https://github.com/xyyjxjy/xy/issues) |
+| 提问题、报 bug、给建议 | [GitHub Issues](https://github.com/xyyjxjy/agentrobe/issues) |
 | 提交代码 / 加判定器 | 先读 [CONTRIBUTING.md](CONTRIBUTING.md) |
 | **报告安全漏洞** | **不要开 public issue** → 仓库页 `Security` → `Report a vulnerability`（私密，只有维护者可见） |
 | 许可与数据再分发 | 见 [NOTICE](NOTICE) |
