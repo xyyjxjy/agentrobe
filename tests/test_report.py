@@ -78,5 +78,24 @@ class TestReport(unittest.TestCase):
         self.assertIn("只能当线索", text)
 
 
+    def test_gain_section_attributes_operator(self):
+        """变异收益必须写出「是哪个算子第一次打穿的」。"""
+        cases = {
+            "A-01": {"id": "A-01", "name": "种子就打穿", "detector": "marker",
+                     "broken": True, "attempt_only": False, "variants": [],
+                     "seed": {"success": True, "reason": "命中标记"}},
+            "A-02": {"id": "A-02", "name": "靠变异打穿", "detector": "marker",
+                     "broken": True, "attempt_only": False,
+                     "seed": {"success": False, "reason": "未命中"},
+                     "variants": [{"op": "split", "success": True, "reason": "命中"},
+                                  {"op": "b64", "success": True, "reason": "命中"}]},
+        }
+        p = self._write("real_gain.json", _summary(final_broken=2), cases=cases)
+        text = report.build([p])
+        self.assertIn("变异收益（1 条靠变异打穿）", text)
+        self.assertIn("`split`×1", text)
+        self.assertNotIn("`b64`×1", text, "同一用例只记第一次打穿的算子")
+
+
 if __name__ == "__main__":
     unittest.main()

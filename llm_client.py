@@ -11,12 +11,31 @@ import threading
 import time
 
 import httpx
+from dotenv import load_dotenv
 from openai import OpenAI
+
+# 任何入口都要能拿到 .env（商汤 key / 模型 / 超时），不能依赖外部先 load。
+# 踩坑：单独跑一个 import llm_client 的脚本时 .env 没加载，LLM_BASE_URL 落到
+# 默认 localhost:11434（本地 Ollama 未运行）→ 报 APIConnectionError，
+# 看起来像"商汤挂了"，实际是环境变量没读。load_dotenv 幂等，不覆盖已有值。
+load_dotenv()
 
 _client = None
 _call_count = 0
 last_finish_reason = ""   # 最近一次调用的 finish_reason，供 agent 落盘排查
 _total_tokens = 0
+
+# finish_reason 必须是"本线程最后一次调用"的，不能是全局最后一次。
+# --workers>1 时同一个进程里多条 agent 会话并行，全局变量会被别的请求覆盖，
+# 落盘的 finish 就跟这条载荷对不上了——「预算截断」和「模型自己说完」分不清，
+# 而这正是 245 条空回答那个事故的根因。
+_finish_tls = threading.local()
+
+
+def _set_finish(reason: str) -> None:
+    global last_finish_reason
+    last_finish_reason = reason
+    _finish_tls.last = reason
 
 # 全局节流：同一进程内所有调用共用一个时间戳。
 # 商汤网关的 token plan 是「低 RPM + 低 TPM」，784 条用例连跑时
@@ -50,11 +69,20 @@ def get_client() -> OpenAI:
     if _client is None:
         base = _base_url()
         is_local = any(h in base for h in _LOCAL_HOSTS)
-        http_client = httpx.Client(trust_env=not is_local, timeout=180.0)
+        # 单次 HTTP 读超时必须可配：它决定"卡住的请求多久能被判死"。
+        # 固定 180s 时，一条卡死的载荷要烧 3 分钟才轮到下一条，而 flash-lite
+        # 正常只要 2-20s——90% 的时间花在等一个不会来的响应。
+        #
+        # 【重要】不要传自定义 http_client=httpx.Client(...)。
+        # openai 3.48 + httpx 0.28 下，SDK 对传入的 httpx.Client 处理不兼容，
+        # 请求会抛 APIConnectionError（裸 httpx 直连却 200，手动 OpenAI() 不传
+        # http_client 也 200——唯一变量就是 http_client 参数）。
+        # 改用 SDK 原生 timeout / max_retries，语义相同且稳定。
         _client = OpenAI(
             api_key=os.getenv("LLM_API_KEY", "ollama"),
             base_url=base,
-            http_client=http_client,
+            timeout=float(os.getenv("LLM_HTTP_TIMEOUT", "180") or 180),
+            max_retries=0,  # 重试由 chat() 自己控制（_retry_delay 有 Retry-After）
         )
     return _client
 
@@ -136,7 +164,7 @@ def chat(messages: list[dict], temperature: float = 0.0, max_retries: int = 5,
             if getattr(resp, "usage", None):
                 _total_tokens += resp.usage.total_tokens or 0
             choice = resp.choices[0]
-            last_finish_reason = choice.finish_reason
+            _set_finish(choice.finish_reason)
             content = choice.message.content or ""
 
             # 空内容 + finish_reason=length = 推理 token 把预算吃光了，
@@ -163,12 +191,13 @@ def chat(messages: list[dict], temperature: float = 0.0, max_retries: int = 5,
 
 
 def finish_reason() -> str:
-    """最近一次调用的 finish_reason。
+    """本线程最近一次调用的 finish_reason。
 
     必须是函数而不是模块级常量——`from llm_client import last_finish_reason`
     在 import 时就把当时的空串绑死了，之后调用多少次都读到 ""。
+    也必须是线程局部的：并发跑批时全局值会被别的会话覆盖（见 _finish_tls）。
     """
-    return last_finish_reason
+    return getattr(_finish_tls, "last", "") or last_finish_reason
 
 
 def stats() -> dict:

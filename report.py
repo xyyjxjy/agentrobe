@@ -93,6 +93,9 @@ def describe(d: dict, path: str = "") -> dict:
         "by_strength": s.get("by_strength") or {},
         "family": s.get("family") or {},
         "attempt_only": s.get("attempt_only") or 0,
+        # 变体级超时/429：不进 variants、也不影响分母，但必须让人看见——
+        # 否则"318 个变体"会被读成"318 次有效尝试"，实际有 56 次没拿到依据。
+        "variants_skipped": s.get("variants_skipped") or 0,
         "small": j < MIN_SAMPLE,
     }
 
@@ -179,6 +182,45 @@ def section_strength(name: str, d: dict) -> list[str]:
     return out
 
 
+def section_gain(name: str, d: dict) -> list[str]:
+    """变异收益：种子轮打不穿、靠变异才打穿的那几条，按算子归因。
+
+    这是"变异到底有没有用"的唯一直接证据。只报条数和算子，不换算成
+    "提升了几个百分点"——分母没变，提升就是新增条数，再换算一次只会多一个
+    可以被误读的数字。
+    """
+    from collections import Counter
+
+    cases = d.get("cases") or {}
+    judged = [c for c in cases.values()
+              if c.get("seed") is not None or c.get("broken")]
+    if not judged:
+        return []
+    seed_ok = [c for c in judged if (c.get("seed") or {}).get("success")]
+    mut_ok = [c for c in judged
+              if c.get("broken") and not (c.get("seed") or {}).get("success")]
+    if not mut_ok:
+        return []
+
+    first = Counter()
+    for c in mut_ok:
+        for v in c.get("variants") or []:
+            if v.get("success"):
+                first[v.get("op") or "?"] += 1
+                break
+    total = len(judged)
+    return [f"### {name} · 变异收益（{len(mut_ok)} 条靠变异打穿）", "",
+            "| 项 | 值 |", "|---|---|",
+            f"| 种子轮打穿 | {len(seed_ok)}/{total} |",
+            f"| 变异新增打穿 | {len(mut_ok)} |",
+            f"| 合计 | {len(seed_ok) + len(mut_ok)}/{total} |",
+            "| 首次奏效的算子 | "
+            + ("、".join(f"`{k}`×{v}" for k, v in first.most_common()) or "—") + " |",
+            "",
+            "算子归因只统计「该用例第一次被打穿时用的是哪个算子」，"
+            "不代表其它算子无效——它们可能只是还没轮到。", ""]
+
+
 def section_cases(name: str, d: dict, limit: int = 8) -> list[str]:
     cases = d.get("cases") or {}
     broken = [(cid, c) for cid, c in cases.items() if c.get("broken")]
@@ -188,8 +230,15 @@ def section_cases(name: str, d: dict, limit: int = 8) -> list[str]:
            "| 用例 | 名称 | 判定器 | 证据 |", "|---|---|---|---|"]
     for cid, c in broken[:limit]:
         seed = c.get("seed") or {}
-        ev = (seed.get("reason") or "")[:90].replace("|", "／")
-        out.append(f"| {cid} | {c.get('name', '')[:24]} | {c.get('detector')} | {ev} |")
+        if seed.get("success"):
+            ev = (seed.get("reason") or "")[:90]
+        else:
+            # 种子轮没打穿、变体打穿的：证据要写变体的，否则读者会看到
+            # 一条"未命中"的理由挂在"攻破"下面。
+            hit = next((v for v in (c.get("variants") or []) if v.get("success")), {})
+            ev = f"[{hit.get('op', '?')}] " + (hit.get("reason") or "")[:80]
+        out.append(f"| {cid} | {c.get('name', '')[:24]} | {c.get('detector')} | "
+                   f"{ev.replace('|', '／')} |")
     if len(broken) > limit:
         out.append(f"| … | 另有 {len(broken) - limit} 条 | | 见原始 JSON |")
     out.append("")
@@ -202,6 +251,10 @@ def section_hygiene(rows: list) -> list[str]:
         if e["skip_runtime"]:
             problems.append(f"- `{name}`：{e['skip_runtime']} 条请求失败/无判定依据，"
                             f"已剔出分母。看这个文件前先确认不是模型服务挂了")
+        if e.get("variants_skipped"):
+            problems.append(f"- `{name}`：另有 {e['variants_skipped']} 个变体因超时/429 "
+                            f"没拿到依据（不计入变体数、也不动分母）。"
+                            f"「{e['variants']} 个变体」不能读成「{e['variants']} 次有效尝试」")
         if not e["variants"] and e["rounds"] == 1:
             problems.append(f"- `{name}`：只有 1 轮且无变体。`--rounds 1` 是"
                             f"「只跑种子轮」，不代表变异失败")
@@ -250,9 +303,12 @@ def build(paths: list, min_judgeable: int = 0) -> str:
             lines += [f"### {name}", "",
                       f"- 模型 `{e['model']}`　判定 {e['judgeable']} 条　"
                       f"ASR {e['broken']}/{e['judgeable']} = {e['asr']}%",
-                      f"- 变异 {e['variants']} 个，{e['rounds']} 轮，停止原因：{e['stop']}",
+                      f"- 变异 {e['variants']} 个，{e['rounds']} 轮，停止原因：{e['stop']}"
+                      + (f"；变体未判 {e['variants_skipped']} 个"
+                         if e.get("variants_skipped") else ""),
                       f"- 仅有越界尝试未生效：{e['attempt_only']} 条（不计入攻破）", ""]
             lines += section_strength(name, d)
+            lines += section_gain(name, d)
             lines += section_cases(name, d)
 
     mocks = [(n, e, d) for n, e, d in runs if e["mock"]]

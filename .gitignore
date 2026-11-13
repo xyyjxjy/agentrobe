@@ -43,3 +43,13 @@ seeds/harmbench_cases.yaml
 
 # è¯´æ˜ï¼šseeds/garak_cases.yamlï¼ˆ1712 æ¡ï¼‰ã€seeds/pyrit_cases.yamlï¼ˆ98 æ¡ï¼‰ã€
 # seeds/agentdojo_cases.yamlï¼ˆ27 æ¡ï¼‰æ˜¯å…¥åº“çš„ï¼Œåˆ«äºº clone ä¸‹æ¥ä¸ç”¨é‡è·‘å¯¼å…¥å™¨å°±èƒ½æµ‹ã€‚
+
+# ²âÊÔÓÃĞéÄâ»·¾³£¨T3 LangChain ·şÎñ£©£¬²»Èë¿â
+.venv-owui/
+
+# ±¾»ú Web GUI ÃÜÔ¿£¬²»Èë¿â
+.webui_secret_key
+
+# FRR ²âÁ¿³É¹û£¨Á¼ĞÔ¼¯ + ÅĞ¶¨Ã÷Ï¸£©£¬runs/* »áµ²£¬ÕâÀï·ÅĞĞ
+!runs/benign_cases.yaml
+!runs/frr_*.json

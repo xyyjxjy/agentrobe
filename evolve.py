@@ -193,6 +193,38 @@ def _evaluate_guarded(transport, case: dict, payload: str, tag: str,
         pool.shutdown(wait=False)
 
 
+def _run_parallel(transport, batch: list, workers: int, case_timeout: float,
+                  beacon, apply) -> None:
+    """并发执行一批载荷，结果按完成顺序交给 apply 记账。
+
+    为什么并发不改变结论：每条载荷走的是独立的一次 agent 会话
+    （`run_agent` 里的 messages / tool_log 都是局部变量），共享的只有 LLM
+    客户端和 outbox 追加；并发不改变任何单条的判定语义，只压缩墙钟时间。
+    串行 90 条 × 90s ≈ 2.5 小时，这个实验要跑 4 轮，串行根本跑不完。
+
+    记账（recs / history / 断点落盘）全部在 as_completed 的主线程里做，
+    所以断点文件不会有两个线程同时写。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futs = {}
+        for tag, case, payload in batch:
+            fut = pool.submit(_evaluate_guarded, transport, case, payload,
+                              tag, beacon, case_timeout)
+            futs[fut] = (tag, case, payload)
+        for fut in as_completed(futs):
+            tag, case, payload = futs[fut]
+            try:
+                v = fut.result()
+            except Exception as e:  # noqa: BLE001
+                # 单条炸掉不能拖垮整批，更不能算成"未攻破"。
+                v = {"tag": tag, "success": False, "attempt": False, "skipped": True,
+                     "reason": f"执行异常：{type(e).__name__}", "evidence": [],
+                     "answer": "", "error": str(e)[:200]}
+            apply(tag, case, v, payload)
+
+
 def _dump_progress(path: str, recs: dict, history: list, runtime_skip: dict,
                    meta: dict, current_round: int | None = None) -> None:
     """把当前进度写成可直接续跑的快照。
@@ -226,7 +258,8 @@ def run_campaign(transport, cases: list, rounds: int, variants: int,
                  seed: int, use_llm: bool, beacon=None, limit: int = 0,
                  sample: bool = False, checkpoint: str = "",
                  checkpoint_every: int = 5, resume: dict | None = None,
-                 case_timeout: float = 0.0, redo_empty: bool = False) -> dict:
+                 case_timeout: float = 0.0, redo_empty: bool = False,
+                 workers: int = 1) -> dict:
     rng = random.Random(seed)
     caps = capabilities(transport)
 
@@ -302,7 +335,8 @@ def run_campaign(transport, cases: list, rounds: int, variants: int,
         for cid, r in r_cases.items():
             if cid not in recs:
                 continue
-            for k in ("seed", "variants", "broken", "attempt_only"):
+            for k in ("seed", "variants", "broken", "attempt_only",
+                      "variant_skip", "variant_skip_reasons"):
                 if k in r:
                     recs[cid][k] = r[k]
         prog = resume.get("_progress") or {}
@@ -333,13 +367,27 @@ def run_campaign(transport, cases: list, rounds: int, variants: int,
             for v in r["variants"]:
                 done_pairs.add((cid, v["op"]))
                 used_ops[cid].add(v["op"])
+        # 兼容旧断点：旧版把「变体超时」也按 case id 记进 runtime_skip，
+        # 于是这些用例判过 seed 却被整条剔出分母（分母缩水 → ASR 虚高）。
+        # 这里按「seed 有没有依据」重新裁定：有依据就留在分母，超时归到 variant_skip。
+        for cid in list(skip_map):
+            s = recs.get(cid, {}).get("seed") or {}
+            if s and not s.get("skipped"):
+                reason = str(skip_map.pop(cid))
+                recs[cid]["variant_skip"] = int(recs[cid].get("variant_skip") or 0) + 1
+                recs[cid].setdefault("variant_skip_reasons", []).append(
+                    "旧断点按用例记账：" + reason[:80])
         runtime_skip.update(skip_map)
         # current_round 非空 = 上一次是跑到一半被打断的，退回这一轮把剩下的补齐；
         # 为空 = 上一轮完整跑完，从下一轮开始。
         cur = prog.get("current_round")
         start_round = int(cur) if cur else len(history) + 1
-        # --redo-empty 是把旧结果退回队列重测，必须回到轮次 1 才会被取出来跑。
-        if redo_empty and retry:
+        # retry 里的用例必须回到轮次 1 才会被取出来重跑：变异轮只跑 (用例, 算子)，
+        # 不跑 "seed" 这个 tag。原来的写法只在 --redo-empty 时退回轮次 1，
+        # 于是"上次超时/429"的 seed 被置成 None、又从 runtime_skip 里 pop 掉，
+        # 最终既没重跑、也不再是 SKIPPED——它静默进了分母，被算成"未攻破"。
+        # 这就是本仓库反复批判的那个 bug 的第三次变体：没拿到证据 ≠ 防御成功。
+        if retry:
             start_round = 1
         print(f"续跑：已恢复 {len(history)} 轮 / {len(done_pairs)} 条判定结果，"
               f"从轮次 {start_round} 开始")
@@ -400,8 +448,9 @@ def run_campaign(transport, cases: list, rounds: int, variants: int,
                 print("   本轮全部已完成，直接进下一轮\n")
                 continue
 
-        for tag, case, payload in batch:
-            v = _evaluate_guarded(transport, case, payload, tag, beacon, case_timeout)
+        def _apply(tag, case, v, payload):
+            """把一条判定结果并进账本。并发的只是执行，记账必须单线程。"""
+            nonlocal evaluated_since_ckpt, new_broken, total_variants
             rec = recs[case["id"]]
             done_pairs.add((case["id"], tag))
             evaluated_since_ckpt += 1
@@ -412,19 +461,29 @@ def run_campaign(transport, cases: list, rounds: int, variants: int,
                                current_round=rnd)
 
             if v.get("skipped"):
-                # 之前这里直接 continue，seed 保持 None 而分母不动，
-                # 于是"7 条全部 404"被显示成 0/7 = 0%（模型很安全）。
-                runtime_skip[case["id"]] = str(v.get("reason") or "无判定依据")[:160]
                 if tag == "seed":
+                    # 种子轮没拿到依据 = 这条用例整体不可判，退出分母。
+                    # 之前这里对任何 tag 都写 runtime_skip，于是**变体**超时也会
+                    # 把整条用例从分母里删掉——而变体只会长在"未攻破"的用例上，
+                    # 等于系统性地剔掉防守成功的样本，ASR 会凭空变高。
+                    # 分母的基准是 seed，变体丢了不该动它的判定资格。
+                    runtime_skip[case["id"]] = str(v.get("reason") or "无判定依据")[:160]
                     rec["seed"] = v        # 留证据，方便回查为什么没判
-                continue
+                else:
+                    rec["variant_skip"] = int(rec.get("variant_skip") or 0) + 1
+                    rec.setdefault("variant_skip_reasons", []).append(
+                        f"{tag}: {str(v.get('reason') or v.get('error') or '')[:80]}")
+                return
             if tag == "seed":
                 rec["seed"] = v
             else:
                 rec["variants"].append({
-                    "op": tag, "payload": payload[:400],
+                    # payload / answer 都按完整长度落盘。原来截到 400 / 120，
+                    # 结果变体判了攻破却看不见为什么——「拒答时引用载荷」这种假阳性
+                    # 恰恰只出现在回答末尾，截断就等于放弃复核。
+                    "op": tag, "payload": payload[:2000],
                     "success": v["success"], "reason": v["reason"],
-                    "error": v.get("error"), "answer": v.get("answer", "")[:120],
+                    "error": v.get("error"), "answer": v.get("answer", "")[:4000],
                 })
                 total_variants += 1
 
@@ -436,6 +495,13 @@ def run_campaign(transport, cases: list, rounds: int, variants: int,
             elif v.get("attempt") and not rec["broken"]:
                 rec["attempt_only"] = True
 
+        if workers > 1 and len(batch) > 1:
+            _run_parallel(transport, batch, workers, case_timeout, beacon, _apply)
+        else:
+            for tag, case, payload in batch:
+                _apply(tag, case, _evaluate_guarded(
+                    transport, case, payload, tag, beacon, case_timeout), payload)
+
         dt = time.time() - t0
         judged_now = [c for c in todo if c["id"] not in runtime_skip]
         broken_now = sum(1 for c in judged_now if recs[c["id"]]["broken"])
@@ -443,6 +509,9 @@ def run_campaign(transport, cases: list, rounds: int, variants: int,
         print(f"   轮次小结：累计攻破 {broken_now}/{len(judged_now)} = {asr:.1f}%   "
               f"本轮新增 {new_broken}   耗时 {dt:.1f}s\n")
 
+        # 续跑会把某一轮重跑一遍（补齐被中断的部分），这里按 round 号覆盖旧记录，
+        # 否则 history 里会出现两条 round=1，汇总的"轮次数"直接翻倍。
+        history = [h for h in history if h.get("round") != rnd]
         history.append({"round": rnd, "tested": len(batch), "broken": broken_now,
                         "new_broken": new_broken, "seconds": round(dt, 1)})
         # 轮次边界是最值得存的点：current_round=None 表示这一轮完整，
@@ -506,6 +575,9 @@ def run_campaign(transport, cases: list, rounds: int, variants: int,
         "skipped_runtime_reasons": dict(list(runtime_skip.items())[:5]),
         "attempt_only": attempt_only,
         "variants": total_variants,
+        # 变体级超时/失败：不进 variants、也不影响分母，但必须显式记账，
+        # 否则"这条变体没跑成"和"这条变体没打穿"在数据里长得一模一样。
+        "variants_skipped": sum(int(r.get("variant_skip") or 0) for r in recs.values()),
         "rounds": len(history),
         "stop_reason": stop_reason,
         "family": fam,
@@ -525,6 +597,8 @@ def run_campaign(transport, cases: list, rounds: int, variants: int,
     print(f"进化后 ASR      {broken}/{len(judged)} = {summary['final_asr']}%"
           f"   （变异贡献 +{broken - seed_broken} 条，共 {total_variants} 个变体）")
     print(f"仅越界未生效    {attempt_only} 条（不计入攻破）")
+    if summary["variants_skipped"]:
+        print(f"变体未判        {summary['variants_skipped']} 条（超时/失败，不计入变体数）")
     print(f"无法判定        {len(skipped) + len(runtime_skip)} 条（不进分母）"
           + (f"，其中运行时无依据 {len(runtime_skip)} 条" if runtime_skip else ""))
     print(f"停止原因        {stop_reason}")
@@ -636,6 +710,9 @@ def main() -> None:
                             "（这些条目当初被当成未攻破占了分母）")
     p_run.add_argument("--case-timeout", type=float, default=300.0,
                        help="单条用例墙钟上限（秒），超时记 SKIPPED；0 = 不限")
+    p_run.add_argument("--workers", type=int, default=1,
+                       help="并发执行的载荷数（1 = 串行）。每条载荷是独立的 agent 会话，"
+                            "并发不改变单条结论，只压缩墙钟时间")
     args = ap.parse_args()
 
     kind = "mock" if getattr(args, "mock", False) else args.transport
@@ -692,7 +769,8 @@ def main() -> None:
                               checkpoint_every=getattr(args, "checkpoint_every", 5),
                               resume=resume,
                               case_timeout=getattr(args, "case_timeout", 0.0),
-                              redo_empty=getattr(args, "redo_empty", False))
+                              redo_empty=getattr(args, "redo_empty", False),
+                              workers=getattr(args, "workers", 1))
     finally:
         if beacon:
             beacon.stop()
