@@ -52,8 +52,19 @@ print(trace.answer, trace.to_dict())
 配好 `.env` 后（商汤/OpenAI 兼容端点，需支持 tool_calls）：
 
 ```bash
-python -m agentkit.demo
+python -m agentkit.demo        # 命令行演示
+python -m agentkit.ui          # Web UI：http://127.0.0.1:8300
 ```
+
+## Web UI（可观测可视化）
+
+```
+python -m agentkit.ui
+```
+
+浏览器打开 `http://127.0.0.1:8300`：**左边聊天，右边 Trace 面板**实时显示 agent 的每一步决策、工具调用与结果。配了 key 用真 LLM（原生 function calling），没配 key 自动降级成离线假 LLM，保证可演示。
+
+面试时可直接展示："模型第一次检索没命中，自己改写了查询词重试"——这是真 agent 的自适应行为。
 
 实测会话（sensenova-6.8-flash-lite）：
 
