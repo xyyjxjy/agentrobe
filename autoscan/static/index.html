@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentProbe AutoScan · 一键式自动化测评</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh}
+  header{padding:16px 28px;background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;justify-content:space-between}
+  header h1{font-size:18px;color:#e6edf3}header h1 span{color:#58a6ff}
+  header .sub{font-size:12px;color:#8b949e}
+  .wrap{max-width:1100px;margin:0 auto;padding:28px}
+  .submit{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:22px;margin-bottom:24px}
+  .submit h2{font-size:14px;color:#8b949e;margin-bottom:14px;font-weight:600}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  .row input{flex:1;min-width:280px;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:12px 14px;border-radius:6px;font-size:14px;outline:none}
+  .row input:focus{border-color:#58a6ff}
+  .row select{background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:12px;border-radius:6px;font-size:14px}
+  .row button{background:#238636;color:#fff;border:none;padding:12px 26px;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer}
+  .row button:hover{background:#2ea043}
+  .row button.demo{background:#1f6feb}
+  .hint{font-size:12px;color:#6e7681;margin-top:10px}
+  .pipeline{display:flex;gap:6px;align-items:center;margin:18px 0;font-size:12px;flex-wrap:wrap}
+  .pipeline .stage{padding:6px 12px;border-radius:16px;background:#21262d;color:#8b949e;border:1px solid #30363d}
+  .pipeline .stage.active{background:#1f6feb22;color:#58a6ff;border-color:#1f6feb}
+  .pipeline .stage.done{background:#23863622;color:#3fb950;border-color:#238636}
+  .pipeline .arrow{color:#484f58}
+  .job{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;margin-bottom:16px}
+  .job .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+  .job .target{font-size:14px;color:#e6edf3;font-weight:600}
+  .job .status{font-size:12px;padding:4px 10px;border-radius:12px;background:#21262d;color:#8b949e}
+  .job .status.done{background:#23863622;color:#3fb950}
+  .job .status.error{background:#f8514922;color:#f85149}
+  .job .status.running{background:#1f6feb22;color:#58a6ff}
+  .bar{height:4px;background:#21262d;border-radius:2px;overflow:hidden;margin:10px 0}
+  .bar i{display:block;height:100%;background:#1f6feb;transition:width .3s}
+  .detail{font-size:12px;color:#8b949e;margin:8px 0}
+  .metrics{display:flex;gap:16px;margin:12px 0;flex-wrap:wrap}
+  .metric{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px 14px;font-size:12px}
+  .metric b{display:block;font-size:20px;color:#58a6ff;margin-top:4px}
+  .report{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:14px;font-size:12.5px;line-height:1.7;white-space:pre-wrap;max-height:400px;overflow-y:auto;margin-top:12px;color:#c9d1d9}
+  .empty{text-align:center;color:#6e7681;padding:40px;font-size:13px}
+  a{color:#58a6ff;text-decoration:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>AgentProbe <span>AutoScan</span></h1>
+  <div class="sub">一键式自动化测评 · 探测 → 选型 → 测评 → 加固建议</div>
+</header>
+<div class="wrap">
+  <div class="submit">
+    <h2>发起自动化测评</h2>
+    <div class="row">
+      <input id="target" placeholder="目标 URL，如 http://127.0.0.1:8310 （需支持 /chat 与 /capabilities）">
+      <select id="rounds"><option value="1">1 轮（快）</option><option value="2" selected>2 轮</option><option value="3">3 轮</option></select>
+      <button onclick="start(false)">开始测评</button>
+      <button class="demo" onclick="start(true)">用内置靶子演示</button>
+    </div>
+    <div class="hint">不知道填什么？直接点「用内置靶子演示」——平台会自动起一个脆弱 agent 并跑完整流程。</div>
+    <div class="pipeline" id="pipe"></div>
+  </div>
+  <div id="jobs"></div>
+</div>
+<script>
+const STAGES=['queued','probe','select','campaign','advise','done'];
+const LABEL={queued:'排队',probe:'① 探测能力',select:'② 自动选型',campaign:'③ 测评+变异',advise:'④ 加固建议',done:'⑤ 完成'};
+let polling=null;
+
+function renderPipe(cur){
+  const p=document.getElementById('pipe');p.innerHTML='';
+  STAGES.forEach((s,i)=>{
+    if(i>0){const a=document.createElement('span');a.className='arrow';a.textContent='→';p.appendChild(a)}
+    const d=document.createElement('span');
+    const idx=STAGES.indexOf(cur);
+    d.className='stage'+(s===cur?' active':(idx>STAGES.indexOf(s)?' done':''));
+    d.textContent=LABEL[s];p.appendChild(d);
+  });
+}
+renderPipe('queued');
+
+async function start(demo){
+  const target=document.getElementById('target').value.trim();
+  if(!demo && !target){alert('请输入目标 URL，或点演示按钮');return}
+  const r=await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({target,demo,rounds:parseInt(document.getElementById('rounds').value)})});
+  const d=await r.json();
+  if(d.error){alert(d.error);return}
+  renderPipe('queued');
+  if(!polling) polling=setInterval(load, 1500);
+  load();
+}
+
+function jobHtml(j){
+  const st=j.state;
+  const cls=st==='done'?'done':st==='error'?'error':(st==='queued'?'':'running');
+  let h=`<div class="job"><div class="head"><span class="target">🎯 ${j.target}</span><span class="status ${cls}">${LABEL[st]||st} · ${j.elapsed}s</span></div>`;
+  h+=`<div class="detail">${j.stage_detail||''}</div>`;
+  if(st==='campaign'||st==='done'){
+    const p=j.progress||{};const bk=p.broken_so_far||0;
+    h+=`<div class="detail">轮次 ${p.round||'?'} · 累计攻破 ${bk} 条</div>`;
+  }
+  if(j.result){
+    const s=j.result.summary||{};
+    h+=`<div class="metrics"><div class="metric">ASR<b>${s.final_asr??'?'}%</b></div><div class="metric">攻破<b>${s.final_broken??'?'}/${s.judgeable??'?'}</b></div><div class="metric">轮次<b>${s.rounds??'?'}</b></div></div>`;
+  }
+  if(j.report_md) h+=`<div class="report">${j.report_md}</div>`;
+  if(j.advice_md) h+=`<div class="report">${j.advice_md}</div>`;
+  if(st==='error') h+=`<div class="report" style="color:#f85149">${j.error}</div>`;
+  h+='</div>';
+  return h;
+}
+
+async function load(){
+  const r=await fetch('/api/jobs');const d=await r.json();
+  const box=document.getElementById('jobs');
+  if(!d.jobs.length){box.innerHTML='<div class="empty">还没有测评任务。填个 URL 或点「用内置靶子演示」开始。</div>';return}
+  box.innerHTML=d.jobs.map(jobHtml).join('');
+  const latest=d.jobs[0];
+  renderPipe(latest.state);
+  if(!d.jobs.some(j=>['queued','probe','select','campaign','advise'].includes(j.state))){
+    if(polling){clearInterval(polling);polling=null}
+  }
+}
+load();
+</script>
+</body>
+</html>

@@ -247,11 +247,23 @@ def _dump_progress(path: str, recs: dict, history: list, runtime_skip: dict,
         "cases": recs,
         "meta": meta,
     }
-    tmp = path + ".tmp"
+    # 用随机 tmp 名：多个进程/多次重跑不会撞同一个 .tmp 文件。
+    # Windows 上残留的 .tmp 若被占用，固定名会让 os.replace 报 WinError 5。
+    import uuid
+    tmp = f"{path}.tmp.{uuid.uuid4().hex[:8]}"
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)
+    # Windows 上若另一个进程（如平台的进度轮询）正打开目标文件，
+    # os.replace 会瞬时报 WinError 5。重试几次即可——文件锁很快就释放。
+    for attempt in range(10):
+        try:
+            os.replace(tmp, path)
+            break
+        except PermissionError:
+            if attempt == 9:
+                raise
+            time.sleep(0.2 * (attempt + 1))
 
 
 def run_campaign(transport, cases: list, rounds: int, variants: int,
